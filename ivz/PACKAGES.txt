@@ -1,0 +1,26 @@
+IVZ PACKAGE INSTALATIONS:
+sudo apt update
+sudo apt-get install [PACKAGES]
+
+PACKAGES:
+- SSH server: openssh-server
+- SSH client: openssh-client
+- WIRESHARK: wireshark
+- APACHE: apache2
+- STRONGSWAN: strongswan strongswan-pki libcharon-extra-plugins
+- RADIUS: freeradius freeradius-utils libapache2-mod-auth-radius
+- curl
+- git
+
+
+
+SET UP APACHE2:
+- CERTIFICATES: sudo make-ssl-cert generate-default-snakeoil --force-overwrite
+- SSL Site: sudo a2ensite default-ssl
+- TLS/SSL module: sudo a2enmod ssl
+- RESTART APACHE: sudo service apache2 restart
+- CHECK APACHE WORKING: http(s)://localhost
+- CHECK SSL WORKING: ssh localhost -> yes -> password isp -> ctrl+d to exit
+
+RADIUS PORTS:
+- UDP: 1812-1813

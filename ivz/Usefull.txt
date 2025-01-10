@@ -1,0 +1,420 @@
+SETUP
+-----
+Settings > Network > Adapter 1 > Advanced > MAC Address > Generates a new random MAC address
+File > Preferences > Networks > NAT Networks > Add new NAT network
+Settings > Network > Adapter 1 > Attached to: NAT network
+
+sudo apt-get update
+sudo apt install gedit
+
+sudo apt-get install openssh-server apache2 curl git openssh-client wireshark strongswan strongswan-pki libcharon-extra-plugins freeradius freeradius-utils libapache2-mod-auth-radius
+
+
+APACHE2
+-------
+sudo make-ssl-cert generate-default-snakeoil --force-overwrite
+sudo a2ensite default-ssl
+sudo a2enmod ssl
+sudo service apache2 restart
+
+
+DISABLE IPV6
+------------
+sudo gedit /etc/sysctl.conf
+
+ Paste:
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+sudo sysctl -p
+
+cat /proc/sys/net/ipv6/conf/all/disable_ipv6
+
+
+CLONE IMAGE
+-----------
+Poweroff
+Rightclick > Clone > Expert mode
+Rename
+Linked Clone
+Randomise MAC
+
+FIREWALL
+-----------
+git clone https://github.com/lem-course/isp-iptables.git
+chmod +x iptables2.sh
+sudo ./iptables1.sh start
+sudo ./iptables1.sh reset
+sudo iptables --list -vn
+
+ Router:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+	Change to:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      dhcp4: true
+      dhcp-identifier: mac
+    enp0s8:
+      addresses: [10.0.0.1/24]
+    enp0s9:
+      addresses: [172.16.0.1/24]
+
+sudo netplan apply
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+sudo iptables -t nat -A POSTROUTING -o enp0s3 -j MASQUERADE
+
+ Client:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+	Change to:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      # assign the IP address
+      addresses: [10.0.0.2/24]
+      # set the default route through isp
+      routes:
+        - to: default
+          via: 10.0.0.1
+      # use Google's DNS
+      nameservers:
+        addresses: [8.8.8.8]
+
+sudo netplan apply
+
+ Server:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+	Change to:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      # assign the IP address
+      addresses: [172.16.0.2/24]
+      # set the default route through isp
+      routes:
+        - to: default
+          via: 172.16.0.1
+      # use Google's DNS
+      nameservers:
+        addresses: [8.8.8.8]
+
+sudo netplan apply
+
+FILTERING
+---------
+
+SSH
+---
+ Server:
+sudo gedit /etc/hosts
+
+	Add:
+127.0.1.1 ssh-server
+
+sudo hostnamectl set-hostname ssh-server
+
+sudo ssh-keygen -t ecdsa -f /etc/ssh/ssh_host_ecdsa_key
+sudo ssh-keygen -t rsa   -f /etc/ssh/ssh_host_rsa_key
+sudo ssh-keygen -t dsa   -f /etc/ssh/ssh_host_dsa_key
+sudo ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
+
+ Client:
+ssh isp@$SERVER
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+
+
+ssh-keygen -t rsa
+ssh-keygen -t dsa
+ssh-keygen -t ecdsa
+
+ssh -i ~/.ssh/id_rsa isp@$SERVER
+ssh-copy-id isp@$SERVER
+ssh $SERVER
+
+ Server:
+sudo gedit /etc/ssh/sshd_config
+
+ Paste:
+PasswordAuthentication no
+
+sudo service ssh restart
+
+
+sudo gedit /etc/apache2/sites-available/000-default.conf
+
+ Paste:
+<Directory /var/www/html>
+    Require ip 127.0.0.1/8
+</Directory>
+
+sudo service apache2 reload
+
+ Client:
+ssh -L 127.0.0.1:8080:127.0.0.1:80 -N $SERVER
+
+
+ Server:
+ IPtables, paste:
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT  -p tcp --dport 22 -m state --state NEW -j ACCEPT
+
+sudo gedit /etc/apache2/sites-available/000-default.conf
+
+ Remove:
+<Directory /var/www/html>
+    Require ip 127.0.0.1/8
+</Directory>
+
+sudo service apache2 reload
+ssh -R 127.0.0.1:8080:127.0.0.1:80 -N isp@$CLIENT
+
+
+VPN
+----
+ Hq router:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+ Edit:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      dhcp4: true
+      dhcp-identifier: mac
+    enp0s8:
+      addresses: [10.1.0.1/16]
+
+sudo netplan apply
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+
+ Hq server:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+ Edit:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      addresses: [10.1.0.2/16]
+      routes:
+        - to: default
+          via: 10.1.0.1
+      nameservers:
+        addresses: [8.8.8.8]
+
+sudo netplan apply
+
+ Branch router:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+ Edit:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      dhcp4: true
+      dhcp-identifier: mac
+    enp0s8:
+      addresses: [10.2.0.1/16]
+
+
+sudo netplan apply
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+
+ Branch client:
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+
+ Edit:
+network:
+  version: 2
+  ethernets:
+    enp0s3:
+      addresses: [10.2.0.2/16]
+      routes:
+        - to: default
+          via: 10.2.0.1
+      nameservers:
+        addresses: [8.8.8.8]
+
+sudo netplan apply
+
+ Hq router:
+sudo gedit /etc/ipsec.conf
+ 
+https://www.strongswan.org/testresults4.html
+ Edit:
+config setup
+
+conn %default
+        ikelifetime=60m
+        keylife=20m
+        rekeymargin=3m
+        keyingtries=1
+        keyexchange=ikev2
+        authby=secret
+
+conn net-net
+        leftsubnet=10.1.0.0/16
+        leftfirewall=yes
+        leftid=@hq
+        right=$BRANCH_IP
+        rightsubnet=10.2.0.0/16
+        rightid=@branch
+        auto=add
+
+sudo gedit /etc/ipsec.secrets
+
+ Add:
+@hq @branch : PSK "secret"
+
+sudo ipsec restart
+
+ Branch router:
+sudo gedit /etc/ipsec.conf
+ 
+ Edit:
+config setup
+
+conn %default
+        ikelifetime=60m
+        keylife=20m
+        rekeymargin=3m
+        keyingtries=1
+        keyexchange=ikev2
+        authby=secret
+
+conn net-net
+        leftsubnet=10.2.0.0/16
+        leftid=@branch
+        leftfirewall=yes
+        right=$HQ_IP
+        rightsubnet=10.1.0.0/16
+        rightid=@hq
+        auto=add
+
+sudo gedit /etc/ipsec.secrets
+
+ Add:
+@hq @branch : PSK "secret"
+
+sudo ipsec restart
+
+sudo ipsec status [all]
+sudo ipsec up net-net 
+
+RADIUS
+-------
+ Radius1:
+sudo gedit /etc/freeradius/3.0/clients.conf 
+
+ Check for:
+client localhost {
+    ipaddr = 127.0.0.1
+    secret = testing123
+    require_message_authenticator = no
+    nas_type = other
+}
+
+sudo gedit /etc/freeradius/3.0/users
+
+  Add:
+"alice" Cleartext-Password := "password"
+
+sudo service freeradius stop
+sudo freeradius -X -d /etc/freeradius/3.0
+echo "User-Name=alice, User-Password=password" | radclient 127.0.0.1 auth testing123 -x
+
+sudo a2enmod auth_radius
+sudo service apache2 restart
+
+sudo gedit /etc/apache2/ports.conf
+
+ Add:
+# FreeRADIUS runs on localhost:1812 (standard RADIUS port).
+# Apache will authenticate itself to the AAA server with PSK 'testing123'.
+# The request shall time-out after 5 seconds, and retry at most 3 times.
+AddRadiusAuth localhost:1812 testing123 5:3
+
+# Next line configures the time (in minutes) in which the authentication cookie
+# set by the Apache server expires
+AddRadiusCookieValid 1
+
+sudo gedit /etc/apache2/sites-available/000-default.conf
+
+ Add in <VirtualHost *:80>:
+<Directory /var/www/html>
+    Options Indexes FollowSymLinks MultiViews
+    AllowOverride None
+
+    # ADD LINE 1
+    # Use basic password authentication
+    # AuthType Digest won't work with RADIUS
+    AuthType Basic
+
+    # ADD LINE 2
+    # Tell the user the realm to which they are authenticating.
+    AuthName "RADIUS Authentication for my site"
+
+    # ADD LINE 3
+    # Set RADIUS to be provider for this basic authentication
+    AuthBasicProvider radius
+
+    # ADD LINE 4
+    # Require that mod_auth_radius returns a valid user,
+    # otherwise access is denied.
+    Require valid-user
+</Directory>
+
+sudo service apache2 reload
+sudo freeradius -X -d /etc/freeradius/3.0
+
+sudo gedit /etc/freeradius/3.0/proxy.conf
+
+ Add:
+home_server hs_domain_com {
+        type = auth+acct
+        ipaddr = $RADIUS2
+        port = 1812
+        secret = testing123
+}
+
+home_server_pool pool_domain_com {
+        type = fail-over
+        home_server = hs_domain_com
+}
+
+realm domain.com {
+        pool = pool_domain_com
+        nostrip
+}
+
+ Radius2:
+sudo gedit /etc/freeradius/3.0/proxy.conf
+
+ Add:
+realm domain.com {
+}
+
+sudo gedit /etc/freeradius/3.0/clients.conf
+
+ Add: client $RADIUS1 {
+    secret = testing123
+}
+
+sudo gedit /etc/freeradius/3.0/users
+
+ Add:
+"bob" Cleartext-Password := "password"
+
+sudo freeradius -X -d /etc/freeradius/3.0

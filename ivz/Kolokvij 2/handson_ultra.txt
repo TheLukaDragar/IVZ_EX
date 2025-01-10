@@ -1,0 +1,442 @@
+##############################################################################################
+# Priprava LJ router računalnika
+# 1. Kloniramo sliko ISP 2016-2017
+# 2. Ponastavimo vrednost MAC-a
+# 3. Prvi omrežni vmesnik nastavimo na Briged mode
+# 4. Drugi omrežni vmesnik nastavimo na Internal network in ji damo ime "lj_network"
+##############################################################################################
+	###############################
+	# Namestitve
+sudo apt update
+sudo apt install openssh-server openssh-client curl
+sudo apt install strongswan ipsec-tools strongswan-plugin-eap-md5 strongswan-plugin-eap-radius
+
+
+	###############################
+	# Onemogocimo IPv6
+sudo vim /etc/sysctl.conf
+	#	Dodaj vrstice:
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+	#	konec vnosa
+sudo sysctl -p
+
+
+	##############################
+	# vzpostavi omrezne vmesnike
+sudo vim /etc/network/interfaces
+	# 	Dodamo naslednje vrstice:
+auto enp0s8
+iface enp0s8 inet static
+  address 10.1.0.1
+  netmask 255.255.0.0
+	# 	konec vnosa
+
+sudo ifup enp0s8
+ifconfig
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+sudo iptables -t nat -A POSTROUTING -o enp0s3 ! -d 10.0.0.0/14 -j MASQUERADE
+
+
+	###############################
+	# priprava certifikatov
+ipsec pki --gen > caKey.der
+ipsec pki --self --in caKey.der --dn "C=SL, O=FRI-LJ, CN=private CA" --ca > caCert.der
+ipsec pki --gen > ljKey.der
+ipsec pki --gen > krKey.der
+ipsec pki --pub --in krKey.der | ipsec pki --issue --cacert caCert.der --cakey caKey.der --dn "C=SL, O=FRI-UL, CN=kr" --san @kr > krCert.der
+ipsec pki --pub --in ljKey.der | ipsec pki --issue --cacert caCert.der --cakey caKey.der --dn "C=SL, O=FRI-UL, CN=lj" --san @lj > ljCert.der
+sudo mv caCert.der /etc/ipsec.d/cacerts/
+sudo mv ljCert.der /etc/ipsec.d/certs/
+sudo mv ljKey.der /etc/ipsec.d/private/
+scp caCert.der isp@192.168.15.16:/home/isp
+scp krKey.der isp@192.168.15.16:/home/isp
+scp krCert.der isp@192.168.15.16:/home/isp
+scp caCert.der isp@192.168.15.17:/home/isp # za RW
+
+
+	###############################
+	# pripravimo VPN
+sudo vim /etc/ipsec.conf
+	# 	Dodamo vrstice:
+conn %default
+        ikelifetime=60m
+        keylife=20m
+        rekeymargin=3m
+        keyingtries=1
+        keyexchange=ikev2
+        ike=aes256gcm16-aesxcbc-modp2048!
+        esp=aes256gcm16-modp2048!
+
+conn lj-kr
+        leftsubnet=10.1.0.0/16,10.3.0.0/16
+        leftcert=ljCert.der
+        leftfirewall=yes
+        leftid=@lj
+        right=192.168.15.16
+        rightsubnet=10.2.0.0/16
+        rightid=@kr
+        auto=add
+
+conn roadwarrior
+        leftauth=psk
+        left=%defaultroute
+        leftsubnet=10.0.0.0/14
+        leftfirewall=yes
+        leftid=@lj
+        right=%any
+        rightauth=eap-radius
+        rightsourceip=10.3.0.0/16
+        auto=add
+     # 	konec vnosa
+
+sudo vim /etc/ipsec.secrets
+	# Dodamo vrstice:
+@lj @kr : RSA ljKey.der
+: PSK "tojemorost"
+	# konec vnosa
+
+sudo vim /etc/strongswan.conf
+	# Dodamo:
+charon {
+        load_modular = yes
+        load = aes des sha1 sha2 md5 pem pkcs1 gmp random nonce x509 curl revocation hmac xcbc stroke kernel-netlink socket-default fips-prf eap-radius updown
+        plugins {
+                include strongswan.d/charon/*.conf
+                eap-radius {
+                        secret = ljdostop
+                        server = 10.1.0.3
+                }
+        }
+}
+	# konec
+
+sudo ipsec restart
+	# povezavo bo vzpostavil drugi router
+
+
+
+##############################################################################################
+# Priprava LJ server računalnika
+# 1. Kloniramo sliko ISP 2016-2017
+# 2. Ponastavimo vrednost MAC-a
+# 3. Prvi omrežni vmesnik nastavimo na Internal network in ji damo ime "lj_network"
+##############################################################################################
+	###############################
+	# Namestitve
+sudo apt install freeradius freeradius-utils 
+
+	###############################
+	# Onemogocimo IPv6
+sudo vim /etc/sysctl.conf
+	#	Dodaj vrstice:
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+	#	konec vnosa
+sudo sysctl -p
+
+
+	##############################
+	# vzpostavi omrezne vmesnike
+sudo vim /etc/network/interfaces
+	# 	Dodamo naslednje vrstice:
+auto enp0s3
+iface enp0s3 inet static
+  address 10.1.0.3
+  netmask 255.255.0.0
+  gateway 10.1.0.1
+  dns-nameservers 8.8.8.8
+	# 	konec vnosa
+
+sudo service network-manager restart
+sudo ifup enp0s3
+
+	
+	##############################
+	# priprava FreeRADIUS
+sudo vim /etc/freeradius/users
+	# Dodamo 
+jelka  Cleartext-Password := "nismsmreka"
+         Reply-Message = "Gozdovi so zakon !!!."
+	# Konec vnosa
+
+sudo vim /etc/freeradius/clients.conf
+	# Dodamo
+client ljrouter {
+        ipaddr = 10.1.0.1
+        secret = ljdostop
+        require_message_authenticator = no
+        nastype = other
+}
+	# Konec vnosa
+
+sudo vim /etc/freeradius/proxy.conf
+	# Dodamo
+realm management {
+}
+
+home_server hs_slackers {
+        type = auth+acct
+        ipaddr = 10.2.0.5
+        port = 1812
+        secret = weareslackers
+}
+
+home_server_pool pool_slackers {
+        type = fail-over
+        home_server = hs_slackers
+}
+
+realm slackers {
+        pool = pool_slackers
+        nostrip
+}
+	# Konec vnosa
+
+sudo service freeradius restart
+
+
+##############################################################################################
+# Priprava KR router računalnika
+# 1. Kloniramo sliko ISP 2016-2017
+# 2. Ponastavimo vrednost MAC-a
+# 3. Prvi omrežni vmesnik nastavimo na Briged mode
+# 4. Drugi omrežni vmesnik nastavimo na Internal network in ji damo ime "kr_network"
+##############################################################################################
+	###############################
+	# Namestitve
+sudo apt update
+sudo apt-get install openssh-server curl
+sudo apt install openssh-client
+sudo apt install strongswan ipsec-tools
+
+	###############################
+	# Onemogocimo IPv6
+sudo vim /etc/sysctl.conf
+	#	Dodaj vrstice:
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+	#	konec vnosa
+sudo sysctl -p
+
+
+	##############################
+	# vzpostavi omrezne vmesnike
+sudo vim /etc/network/interfaces
+	# 	Dodamo naslednje vrstice:
+auto enp0s8
+iface enp0s8 inet static
+  address 10.1.0.1
+  netmask 255.255.0.0
+	# 	konec vnosa
+
+sudo ifup enp0s8
+ifconfig
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+sudo iptables -t nat -A POSTROUTING -o enp0s3 ! -d 10.0.0.0/14 -j MASQUERADE
+
+
+	###############################
+	# priprava certifikatov
+	# kopirani so bili iz LJ routerja
+sudo mv caCert.der /etc/ipsec.d/cacerts/
+sudo mv krCert.der /etc/ipsec.d/certs/
+sudo mv krKey.der /etc/ipsec.d/private/
+
+
+	###############################
+	# pripravimo VPN
+sudo vim /etc/ipsec.conf
+	# 	Dodamo vrstice:
+conn %default
+        ikelifetime=60m
+        keylife=20m
+        rekeymargin=3m
+        keyingtries=1
+        keyexchange=ikev2
+        ike=aes256gcm16-aesxcbc-modp2048!
+        esp=aes256gcm16-modp2048!
+
+conn kr-lj
+        leftsubnet=10.2.0.0/16
+        leftcert=krCert.der
+        leftfirewall=yes
+        leftid=@kr
+        right=192.168.15.15
+        rightsubnet=10.1.0.0/16,10.3.0.0/16
+        rightid=@lj
+        auto=add
+     # 	konec vnosa
+sudo vim /etc/ipsec.secrets
+	# Dodamo vrstice:
+@kr @lj : RSA krKey.der
+	# konec vnosa
+sudo ipsec restart
+sudo ipsec up kr-lj
+
+
+
+##############################################################################################
+# Priprava KR server računalnika
+# 1. Kloniramo sliko ISP 2016-2017
+# 2. Ponastavimo vrednost MAC-a
+# 3. Prvi omrežni vmesnik nastavimo na Internal network in ji damo ime "kr_network"
+##############################################################################################
+	###############################
+	# Namestitve za RADIUS
+sudo apt-get install apache2 curl
+sudo make-ssl-cert generate-default-snakeoil --force-overwrite
+sudo a2ensite default-ssl
+sudo a2enmod ssl
+sudo service apache2 restart
+sudo apt install freeradius freeradius-utils apache2 libapache2-mod-auth-radius
+sudo a2enmod auth_radius
+sudo service apache2 restart
+
+	###############################
+	# Onemogocimo IPv6
+sudo vim /etc/sysctl.conf
+	#	Dodaj vrstice:
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+	#	konec vnosa
+sudo sysctl -p
+
+
+	##############################
+	# vzpostavi omrezne vmesnike
+sudo vim /etc/network/interfaces
+	# 	Dodamo naslednje vrstice:
+auto enp0s3
+iface enp0s3 inet static
+  address 10.2.0.5
+  netmask 255.255.0.0
+  gateway 10.2.0.1
+  dns-nameservers 8.8.8.8
+	# 	konec vnosa
+
+sudo service network-manager restart
+sudo ifup enp0s3
+
+	
+	##############################
+	# priprava FreeRADIUS
+sudo vim /etc/freeradius/users
+	# Dodamo 
+alice  Cleartext-Password := "exxtraproductive"
+         Reply-Message = "Delam na polno !!!."
+	# Konec vnosa
+
+sudo vim /etc/freeradius/clients.conf
+	# Dodamo
+client ljradius {
+        ipaddr = 10.1.0.3
+        secret = weareslackers
+        require_message_authenticator = no
+}
+	# Konec vnosa
+
+sudo vim /etc/freeradius/proxy.conf
+	# Dodamo
+realm slackers {
+}
+	# Konec vnosa
+	
+sudo service freeradius restart
+
+	##############################
+	# priprava Apache strežnika
+sudo a2enmod auth_radius
+sudo service apache2 restart
+
+sudo vim /etc/apache2/ports.conf
+	# Dodamo
+AddRadiusAuth localhost:1812 testing123 5:3
+AddRadiusCookieValid 1
+	# Konec
+
+sudo vim /etc/apache2/sites-available/000-default.conf
+ 	# Dodamo
+	<Directory /var/www/html>
+	    Options Indexes FollowSymLinks MultiViews
+	    AllowOverride None
+	
+	    # Use basic password authentication
+	    # AuthType Digest won't work with RADIUS
+	    AuthType Basic
+	
+	    # Tell the user the realm to which they are authenticating.
+	    AuthName "RADIUS Authentication for my site"
+	
+	    # Set RADIUS to be provider for this basic authentication
+	    AuthBasicProvider radius
+	
+	    # Require that mod_auth_radius returns a valid user,
+	    # otherwise access is denied.
+	    Require valid-user
+	</Directory>
+ 	# Konec
+
+ sudo service apache2 restart
+ # NAS client za localhost je že po defaultu dodan tako da ne potrebujemo še enega NAS clienta
+
+##############################################################################################
+# Priprava mirko RW računalnika
+# 1. Kloniramo sliko ISP 2016-2017
+# 2. Ponastavimo vrednost MAC-a
+# 3. Prvi omrežni vmesnik nastavimo na Briged mode
+##############################################################################################
+	##############################
+	# Namestitve za VPN
+sudo apt install strongswan ipsec-tools strongswan-plugin-eap-md5 strongswan-plugin-eap-radius
+
+	##############################
+	# vzpostavi IPsec (VPN)
+sudo mv CaCert.der /etc/ipsec.d/cacerts
+sudo vim /etc/ipsec.conf
+	# Dodaj
+conn %default
+        ikelifetime=60m
+        keylife=20m
+        rekeymargin=3m
+        keyingtries=1
+        keyexchange=ikev2
+        ike=aes256gcm16-aesxcbc-modp2048!
+        esp=aes256gcm16-modp2048!
+
+conn roadwarrior
+        leftauth=eap
+        left=%defaultroute
+        leftsourceip=10.3.0.7
+        leftfirewall=yes
+        leftid=@alice@slackers
+        right=192.168.15.15
+        rightauth=psk
+        rightsubnet=10.0.0.0/14
+        rightid=@lj
+        auto=add
+	# Konec
+
+sudo vim /etc/ipsec.secrets
+	# Dodaj
+@lj @alice : EAP "exxtraproductive"
+@lj @alice : PSK "tojemorost"
+	# Konec
+
+sudo vim /etc/strongswan.conf
+	# Dodaj
+charon {
+        load_modular = yes
+        load = aes des sha1 sha2 md5 pem pkcs1 gmp random nonce x509 curl revocation hmac xcbc stroke kernel-netlink socket-default fips-prf eap-md5 updown
+        plugins {
+                include strongswan.d/charon/*.conf
+        }
+}
+	# Konec
+
+sudo ipsec restart
+sudo ipsec up roadwarrior

@@ -1,0 +1,250 @@
+IMPORTANT!
+
+1. Always disable IPV6:
+ - open: /etc/sysctl.conf
+ - add to the end:
+	net.ipv6.conf.all.disable_ipv6 = 1
+	net.ipv6.conf.default.disable_ipv6 = 1
+	net.ipv6.conf.lo.disable_ipv6 = 1
+ - run: sudo sysctl -p
+ 
+2. Get the fresh iptables.sh files from git:
+ - Get files: git clone https://github.com/lem-course/isp-iptables.git
+ - if it fails: sudo apt install git and run again
+ - change files' execution permissions:
+    - chmod +x iptables1.sh
+	- chmod +x iptables2.sh
+	- chmod +x handson-tables.sh
+	
+3. IPTABLES:
+ - always run the iptables script first: sudo ./handson-tables.sh start
+ - List activated rules: sudo iptables --list -vn
+ - after changes do: sudo ./handson-tables.sh restart
+ - TESTING:
+	- ICMP with ping;
+	- DNS with dig, e.g. dig www.fri.uni-lj.si;
+	- HTTP with curl, e.g. curl google.com;
+	- SSH client: ssh ivz@ip-of-the-machine-your-are-connecting-to.
+ - RESET: sudo ./iptables1.sh reset
+
+4. SSH SETUP:
+ - rename machines so we know which one we're connected to:
+   - sudo nano /etc/hosts
+   - 127.0.1.1	ssh-[server/client]
+   - restart terminal
+ - regenerate keys (what you need):
+   - sudo ssh-keygen -t [algorithm] -f /etc/ssh/ssh_host_[algorithm]_key
+   - algorithms: ecdsa, rsa, dsa, ed25519
+
+4.1 SSH AUTHENTICATION:
+ - USERNAME/PASSWORD:
+   - on client connect to server: ssh isp@[server_ip]
+   - check if keys match! (mitm attack):
+     - to check server key: ssh-keygen -lf /etc/ssh/ssh_host_[algorithm]_key.pub
+   - provide login
+   - if you change server keys:
+     - on server do: sudo ssh-keygen -t [algorithm] -f /etc/ssh/ssh_host_[algorithm]_key
+     - on client clear fingerprints: ssh-keygen -f "/home/isp/.ssh/known_hosts" -R "[server_ip]"
+     - reconnect with ssh isp@[server_ip]
+ - CLIENT PUBLIC KEY:
+   - on client regen SSH keys:
+     - ssh-keygen -t [algorithm]
+     - algorithms: rsa, dsa, ecdsa
+   - enable pka:
+     - copy public key to remote computer
+     - enable and link it to a specific account
+     - run on server: ssh-copy-id isp@[server_ip]
+   - disable password-based login:
+     - on server: sudo nano /etc/ssh/sshd_config
+     - add command: PasswordAuthentication no
+     - restart server: sudo service ssh restart
+   - force password-based connection on client:
+     - ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no [server_ip]
+
+4.2 SSH TUNNELING (on client):
+ - make apache accessible only through localhost (for testing) - server:
+   - open file: sudo nano /etc/apache2/sites-available/000-default.conf
+   - add:
+     <Directory /var/www/html>
+	Require ip 127.0.0.1/8
+     </Directory>
+   - run: sudo service apache2 reload
+   - try on server: curl localhost
+   - try on client: curl [server_ip]
+ - on client setup tunnel: ssh -L 127.0.0.1:8080:127.0.0.1:80 -N [server_ip]
+   - run on client (first crtl+shift+T for new tab): curl localhost:8080
+ - on server inspect access logs for apache: tail -f /var/log/apache2/access.log
+
+4.3 SSH REVERSE TUNNELING (on server):
+ - on server disable ipv6
+ - into handson_tables.sh add:
+   iptables -A INPUT -i lo -j ACCEPT
+   iptables -A OUTPUT -o lo -j ACCEPT
+   iptables -A INPUT  -m state --state ESTABLISHED,RELATED -j ACCEPT
+   iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+   iptables -A OUTPUT  -p tcp --dport 22 -m state --state NEW -j ACCEPT
+ - remove added lines in 000-default.conf on client
+ - restart apache: sudo service apache2 reload
+ - ssh to the client from server: ssh -R 127.0.0.1:8080:127.0.0.1:80 -N isp@[client_ip]
+ - client should be able to access: curl localhost:8080
+
+5. VIRTUAL PRIVATE NETWORK:
+ - install needed libraries:
+   - sudo apt update
+   - sudo apt install strongswan strongswan-pki libcharon-extra-plugins apache2 wireshark
+ - disable ipv6
+ - clone machines:
+   - on routers: adapter 1 - bridged, adapter 2 - internal network (right subnet)
+   - on machines: adapter 1 - internal network (right subnet)
+   - IMPORTANT! you may be instructed to only use 
+     one machine for headquarters and one for branch - only router parts apply onward
+ - set up correct adapter settings:
+   - on routers:
+     - sudo nano /etc/netplan/01-network-manager-all.yaml
+     - write following code (substitute IP's with correct network addresses):
+	network:
+  	  version: 2
+  	  ethernets:
+   	   enp0s3:
+     	     dhcp4: true
+   	     dhcp-identifier: mac
+   	   enp0s8:
+   	     addresses: [10.1.0.1/16] 
+     - apply changes: sudo netplan apply
+     - check changes: ip addr
+   - on machines:
+     - sudo nano /etc/netplan/01-network-manager-all.yaml
+     - write following code (substitute IP's with correct network addresses):
+       network:
+         version: 2
+         ethernets:
+           enp0s3:
+             addresses: [10.1.0.2/16]
+             gateway4: 10.1.0.1
+             nameservers:
+               addresses: [8.8.8.8]
+
+5.1 VPN IPsec tunnel (PSK):
+ - routers:
+   - sudo nano /etc/ipsec.conf
+   - write (substitute IP's with correct network addresses):
+        config setup
+
+	conn %default
+  	     ikelifetime=60m
+  	     keylife=20m
+   	     rekeymargin=3m
+   	     keyingtries=1
+  	     keyexchange=ikev2
+    	     authby=secret
+
+	conn net-net
+   	     leftsubnet=10.1.0.0/16
+    	     leftfirewall=yes
+    	     leftid=@hq
+    	     right=$BRANCH_IP
+    	     rightsubnet=10.2.0.0/16
+     	     rightid=@branch
+    	     auto=add
+   - sudo nano /etc/ipsec.secrets
+   - write (replace "secret" with actual secret):
+     @hq @branch : PSK "secret"
+   - sudo ipsec restart
+ - to start the tunnel (on one of the routers):
+   - sudo ipsec up net-net
+   - if you can't ping all machines, make sure forwarding is enabled in iptables
+   - CHECK IF IP'S OF THE MACHINES ARE STILL OKAY - MAY RESTART IP ADDRESSING, DO:
+     - sudo sysctl -p
+     - sudo netplan apply
+     - sudo ipsec up net-net again
+
+6. RADIUS:
+ - sudo apt update
+ - sudo apt install freeradius freeradius-utils apache2 libapache2-mod-auth-radius wireshark
+ - create clones with bridged adapter
+
+6.1 RADIUS SERVER WITH TEST CLIENT:
+ - sudo nano /etc/freeradius/3.0/clients.conf
+   - make sure it includes:
+     client localhost {
+      ipaddr = 127.0.0.1
+      secret = testing123
+      require_message_authenticator = no
+      nas_type = other
+     }
+ - sudo nano /etc/freeradius/3.0/users
+   - add:
+     "[name]"	Cleartext-Password := "[password]"
+ - stop service: sudo service freeradius stop
+ - run service in foreground: sudo freeradius -X -d /etc/freeradius/3.0
+ - test service: echo "User-Name=[name], User-Password=[password]" | radclient 127.0.0.1 auth testing123 -x
+
+6.2 HTTP AUTH APACHE+RADIUS:
+ - enable auth_radius module:
+   - sudo a2enmod auth_radius
+   - sudo service apache2 restart
+ - configure apache radius:
+   - sudo nano /etc/apache2/ports.conf
+   - Add lines:
+     - AddRadiusAuth localhost:1812 testing123 5:3
+     - AddRadiusCookieValid 1
+ - sudo nano /etc/apache2/sites-available/000-default.conf
+   - inside <VirtualHost *:80> add:
+     <Directory /var/www/html>
+       Options Indexes FollowSymLinks MultiViews
+       AllowOverride None
+       AuthType Basic
+       AuthName "RADIUS Authentication for my site"
+       AuthBasicProvider radius
+       Require valid-user
+     </Directory>
+ - reload apache: sudo service apache2 reload
+ - sudo freeradius -X -d /etc/freeradius/3.0
+ - check if it works on http://localhost (and wireshark to track packets)
+
+6.3 ROAMING AND FEDERATION:
+ - on radius1 create domain.com:
+   - sudo nano /etc/freeradius/3.0/proxy.conf
+   - add:
+     home_server hs_domain_com {
+        type = auth+acct
+        ipaddr = $RADIUS2
+        port = 1812
+        secret = testing123
+     }
+
+     home_server_pool pool_domain_com {
+        type = fail-over
+        home_server = hs_domain_com
+     }
+
+     realm domain.com {
+        pool = pool_domain_com
+        nostrip
+     }
+ - on radius2 create domain.com:
+   - sudo nano /etc/freeradius/3.0/proxy.conf
+   - add:
+     realm domain.com {
+     }
+ - on radius2 define new AAA client (proxy):
+   - sudo nano /etc/freeradius/3.0/clients.conf
+   - add:
+     client $RADIUS1 {
+       secret = testing123
+     }
+   - create new end user:
+   - sudo nano /etc/freeradius/3.0/users
+   - add:
+     "[name]"	Cleartext-Password := "[password]"
+ - run freeradius in foreground on both machines
+   - sudo freeradius -X -d /etc/freeradius/3.0
+ - open http://localhost
+ - [name]@domain.com for proxy user
+
+
+
+
+
+
+

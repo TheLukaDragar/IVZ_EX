@@ -1,0 +1,93 @@
+Midterm 2 comands 
+	hq - server
+		VPN- task 
+			sudo apt update
+			sudo apt install strongswan
+			sudo nano /etc/netplan/01-network-manager-all.yaml
+				network:
+					version: 2
+					ethernets:
+						enp0s3:
+					    addresses: [10.1.0.1/16]
+			sudo netplan apply
+			sudo ipaddr
+			echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+			sudo nano /etc/ipsec.conf 
+				config setup
+					conn %default
+					        ikelifetime=60m
+					        keylife=20m
+					        rekeymargin=3m
+					        keyingtries=1
+					        keyexchange=ikev2
+					        authby="this_is_my_psk"
+
+					conn net-net
+					        leftsubnet=10.1.0.0/16
+					        leftfirewall=yes
+					        leftid=@hq
+					        right=10.2.0.1/16
+					        rightsubnet=10.2.0.0/16
+					        rightid=@branch
+					        auto=add
+			sudo ipsec restart
+		SSH- task
+			sudo apt-get update
+			sudo apt-get install openssh-server
+			systemctl status ssh
+			sudo nano /etc/ssh/sshd_config
+				PasswordAuthentication no
+			sudo service ssh restart
+		Firewall rules - task 
+			sudo iptables -P INPUT DROP
+			sudo iptables -A INPUT -p udp --dport 500 -j ACCEPT
+			sudo iptables -A INPUT -p udp --dport 4500 -j ACCEPT
+			sudo iptables -A INPUT -p ah -j ACCEPT
+			sudo iptables -A INPUT -p esp -j ACCEPT
+			sudo iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+			sudo iptables -A INPUT -p icmp -j ACCEPT
+			sudo iptables-save
+				
+
+
+	br - cliente 
+		VPN- task
+			sudo apt update
+			sudo apt install strongswan
+			sudo nano /etc/netplan/01-network-manager-all.yaml
+				network:
+  					version: 2
+  					ethernets:
+    					enp0s3:
+      					    addresses: [10.2.0.1/16]
+      		sudo netplan apply
+			sudo ipaddr
+			echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+			sudo nano /etc/ipsec.conf
+			config setup
+					conn %default
+					        ikelifetime=60m
+					        keylife=20m
+					        rekeymargin=3m
+					        keyingtries=1
+					        keyexchange=ikev2
+					        authby="this_is_my_psk"
+					conn net-net
+				        leftsubnet=10.2.0.0/16
+				        leftid=@branch
+				        leftfirewall=yes
+				        right=10.1.0.1/16
+				        rightsubnet=10.1.0.0/16
+				        rightid=@hq
+				        auto=add
+			sudo ipsec restart
+		SSH - task
+			sudo ssh isp@192.168.178.63/24
+			ssh-keygen -t ecdsa
+			ssh-copy-id isp@192.168.178.63
+			ssh 192.168.178.63
+		Firewall rules - task 
+
+
+
+
